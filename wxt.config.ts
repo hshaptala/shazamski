@@ -11,6 +11,9 @@ export default defineConfig({
         action: {
             default_title: 'Shazamski — identify this song',
         },
+        content_security_policy: {
+            extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';",
+        },
         icons: {
             16: '/icons/icon-16.png',
             32: '/icons/icon-32.png',

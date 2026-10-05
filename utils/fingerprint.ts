@@ -113,19 +113,15 @@ async function loadWasm(): Promise<WasmModule | null> {
     return wasmReady;
 }
 async function tryWasmFingerprint(mod: WasmModule, mono11025: Float32Array): Promise<Int32Array | null> {
-    const attempts: Array<() => any> = [
-        () => typeof mod.fingerprint_audio === 'function' && mod.fingerprint_audio(mono11025, TARGET_SAMPLE_RATE),
-        () => typeof mod.fingerprint === 'function' && mod.fingerprint(mono11025, TARGET_SAMPLE_RATE),
-        () => typeof mod.fingerprintAudio === 'function' && mod.fingerprintAudio(mono11025, TARGET_SAMPLE_RATE),
-        () => typeof mod.fpcalc === 'function' && mod.fpcalc(mono11025, TARGET_SAMPLE_RATE),
-    ];
-    for (const fn of attempts) {
+    const i16 = new Int16Array(mono11025.length);
+    for (let i = 0; i < mono11025.length; i++) {
+        const s = Math.max(-1, Math.min(1, mono11025[i]));
+        i16[i] = Math.round(s * 32767);
+    }
+    if (typeof mod.fingerprintFromSamples === 'function') {
         try {
-            const r = fn();
-            if (!r)
-                continue;
-            const v = r instanceof Promise ? await r : r;
-            const arr = normalizeWasmResult(v);
+            const r = await mod.fingerprintFromSamples(TARGET_SAMPLE_RATE, 1, i16);
+            const arr = normalizeWasmResult(r && r.raw ? r.raw : r);
             if (arr && arr.length >= 8)
                 return arr;
         }
@@ -133,25 +129,18 @@ async function tryWasmFingerprint(mod: WasmModule, mono11025: Float32Array): Pro
         }
     }
     try {
-        const Cls = mod.Fingerprinter ?? mod.FingerprinterWasm ?? mod.Chromaprint;
+        const Cls = mod.Fingerprinter;
         if (typeof Cls === 'function') {
-            const inst = new Cls(TARGET_SAMPLE_RATE, 1);
-            if (typeof inst.feed === 'function') {
-                const maybe = inst.feed(mono11025);
-                if (maybe instanceof Promise)
-                    await maybe;
+            const inst = new Cls();
+            try {
+                inst.start(TARGET_SAMPLE_RATE, 1);
+                inst.consume(i16);
+                inst.finish();
+                const arr = normalizeWasmResult(inst.getFingerprint());
+                if (arr && arr.length >= 8)
+                    return arr;
             }
-            else if (typeof inst.consume === 'function') {
-                const maybe = inst.consume(mono11025);
-                if (maybe instanceof Promise)
-                    await maybe;
-            }
-            const fin = inst.finish?.() ?? inst.finish_fingerprint?.() ?? inst.get_fingerprint?.() ?? inst.fingerprint?.();
-            const v = fin instanceof Promise ? await fin : fin;
-            const arr = normalizeWasmResult(v);
-            if (arr && arr.length >= 8)
-                return arr;
-            if (typeof inst.free === 'function') {
+            finally {
                 try {
                     inst.free();
                 }
