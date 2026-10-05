@@ -1,0 +1,103 @@
+name: Build fingerprint index
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "SoundCloud channel URL to index"
+        required: false
+        default: "https://soundcloud.com/michel-waber"
+      seconds:
+        description: "Seconds fingerprinted per track head (30-120)"
+        required: false
+        default: "120"
+      concurrency:
+        description: "Parallel ffmpeg+fpcalc jobs (2-4 to avoid rate limits)"
+        required: false
+        default: "3"
+      limit:
+        description: "Index only first N tracks (empty = full run)"
+        required: false
+        default: ""
+      dry-run:
+        description: "List tracks only, no audio work"
+        required: false
+        type: boolean
+        default: false
+concurrency:
+  group: index-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build-index:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    env:
+      SOUNDCLOUD_CLIENT_ID: ${{ secrets.SOUNDCLOUD_CLIENT_ID }}
+      SHAZAMSKI_CHANNEL: https://soundcloud.com/michel-waber
+      SHAZAMSKI_OUT: shazamski-index.json
+      SHAZAMSKI_SECONDS: "120"
+      SHAZAMSKI_CONCURRENCY: "3"
+    steps:
+      - name: Check out repo (for resume + commit-back)
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install ffmpeg + fpcalc (Chromaprint)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libchromaprint-tools
+          ffmpeg -version | head -n 1
+          fpcalc -version
+          node -v
+      - name: Fail fast if SOUNDCLOUD_CLIENT_ID is missing
+        if: ${{ inputs.dry-run != true }}
+        run: |
+          if [ -z "$SOUNDCLOUD_CLIENT_ID" ]; then
+            echo "::error::Missing SOUNDCLOUD_CLIENT_ID secret. Add it under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+      - name: Build index
+        run: |
+          CHANNEL="${{ inputs.channel }}"
+          [ -z "$CHANNEL" ] && CHANNEL="$SHAZAMSKI_CHANNEL"
+          SECONDS="${{ inputs.seconds }}"
+          [ -z "$SECONDS" ] && SECONDS="$SHAZAMSKI_SECONDS"
+          CONCURRENCY="${{ inputs.concurrency }}"
+          [ -z "$CONCURRENCY" ] && CONCURRENCY="$SHAZAMSKI_CONCURRENCY"
+          ARGS=(--channel "$CHANNEL" --out "$SHAZAMSKI_OUT" --seconds "$SECONDS" --concurrency "$CONCURRENCY")
+          if [ -n "${{ inputs.limit }}" ]; then
+            ARGS+=(--limit "${{ inputs.limit }}")
+          fi
+          if [ "${{ inputs.dry-run }}" = "true" ]; then
+            ARGS+=(--dry-run)
+          fi
+          node tools/indexer/build-index.mjs "${ARGS[@]}"
+      - name: Report index size
+        if: always()
+        run: ls -lh shazamski-index.json shazamski-index.json.failures.json 2>/dev/null || true
+      - name: Upload index artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shazamski-index
+          path: |
+            shazamski-index.json
+            shazamski-index.json.failures.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Commit refreshed index back to repo
+        if: ${{ inputs.dry-run != true && github.event_name != 'pull_request' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add shazamski-index.json
+          if git diff --cached --quiet; then
+            echo "Index unchanged — nothing to commit."
+          else
+            TRACKS=$(node -e "console.log(JSON.parse(require('fs').readFileSync('shazamski-index.json','utf8')).trackCount ?? '?')" 2>/dev/null || echo "?")
+            git commit -m "chore: refresh shazamski-index.json ($TRACKS tracks) [skip ci]"
+            git push
+          fi
