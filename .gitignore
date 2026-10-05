@@ -4,6 +4,7 @@ node_modules/
 dist/
 *.log
 .DS_Store
+.env
 tools/indexer/node_modules/
 tools/indexer/*.mp3
 tools/indexer/*.wav
