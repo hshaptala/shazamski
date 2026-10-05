@@ -74,6 +74,10 @@ Options:
   --dry-run            List tracks only, no audio work.
   --help               This text.
 
+  Every option also reads .env (CLI wins): SOUNDCLOUD_CLIENT_ID, SHAZAMSKI_CHANNEL
+  (or SHAZAMSKI_ARTIST slug), SHAZAMSKI_OUT, SHAZAMSKI_SECONDS, SHAZAMSKI_CONCURRENCY,
+  SHAZAMSKI_LIMIT, SHAZAMSKI_FPCALC, SHAZAMSKI_FFMPEG, SHAZAMSKI_DRY_RUN=1, SHAZAMSKI_NO_RESUME=1.
+
 Examples:
   export SOUNDCLOUD_CLIENT_ID=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
   sudo apt install ffmpeg libchromaprint-tools
@@ -183,13 +187,14 @@ async function main() {
     const channel = args.channel || process.env.SHAZAMSKI_CHANNEL
         || (process.env.SHAZAMSKI_ARTIST ? `https://soundcloud.com/${process.env.SHAZAMSKI_ARTIST}` : undefined);
     const clientId = args['client-id'] || process.env.SOUNDCLOUD_CLIENT_ID;
-    const outPath = args.out || 'shazamski-index.json';
-    const seconds = Math.min(120, Math.max(30, Number(args.seconds ?? 120)));
-    const concurrency = Math.min(8, Math.max(1, Number(args.concurrency ?? 3)));
-    const limit = args.limit ? Number(args.limit) : Infinity;
-    const dryRun = !!args['dry-run'];
-    const fpcalcBin = args.fpcalc || 'fpcalc';
-    const ffmpegBin = args.ffmpeg || 'ffmpeg';
+    const outPath = args.out || process.env.SHAZAMSKI_OUT || 'shazamski-index.json';
+    const seconds = Math.min(120, Math.max(30, Number(args.seconds ?? process.env.SHAZAMSKI_SECONDS ?? 120)));
+    const concurrency = Math.min(16, Math.max(1, Number(args.concurrency ?? process.env.SHAZAMSKI_CONCURRENCY ?? 3)));
+    const limit = args.limit ? Number(args.limit) : (process.env.SHAZAMSKI_LIMIT ? Number(process.env.SHAZAMSKI_LIMIT) : Infinity);
+    const dryRun = !!args['dry-run'] || ['1', 'true', 'yes'].includes((process.env.SHAZAMSKI_DRY_RUN ?? '').toLowerCase());
+    const fpcalcBin = args.fpcalc || process.env.SHAZAMSKI_FPCALC || 'fpcalc';
+    const ffmpegBin = args.ffmpeg || process.env.SHAZAMSKI_FFMPEG || 'ffmpeg';
+    const noResume = args['no-resume'] === true || args.resume === 'false' || ['1', 'true', 'yes'].includes((process.env.SHAZAMSKI_NO_RESUME ?? '').toLowerCase());
     if (!channel) {
         console.error('Missing --channel. See --help.');
         process.exit(2);
@@ -221,7 +226,7 @@ async function main() {
     await checkBin(ffmpegBin, ['-version'], 'ffmpeg');
     await checkBin(fpcalcBin, ['-version'], 'fpcalc');
     let existing = [];
-    if (fs.existsSync(outPath) && args.resume !== 'false' && args['no-resume'] !== true) {
+    if (fs.existsSync(outPath) && !noResume) {
         try {
             const prev = JSON.parse(fs.readFileSync(outPath, 'utf8'));
             if (Array.isArray(prev.tracks)) {
