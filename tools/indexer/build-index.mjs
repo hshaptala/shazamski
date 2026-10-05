@@ -6,6 +6,32 @@ import path from 'node:path';
 import os from 'node:os';
 import { resolveChannel, listAllTracks, pickTranscoding, resolveStreamUrl } from './soundcloud.mjs';
 import { fpcalcFile, encodeRawToB64 } from './fingerprint-utils.mjs';
+// Zero-dep .env loader: checks CWD/.env, tools/indexer/.env, and project-root/.env
+// so `--client-id` / `--channel` can be omitted after first setup.
+for (const p of [
+    path.join(process.cwd(), '.env'),
+    path.join(path.dirname(new URL(import.meta.url).pathname), '.env'),
+    path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..', '.env'),
+]) {
+    try {
+        if (fs.existsSync(p)) {
+            for (const line of fs.readFileSync(p, 'utf8').split('\n')) {
+                const t = line.trim();
+                if (!t || t.startsWith('#') || !t.includes('='))
+                    continue;
+                const i = t.indexOf('=');
+                const k = t.slice(0, i).trim();
+                let v = t.slice(i + 1).trim();
+                if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))
+                    v = v.slice(1, -1);
+                if (!(k in process.env))
+                    process.env[k] = v;
+            }
+            break;
+        }
+    }
+    catch { /* ignore malformed .env */ }
+}
 const execFileAsync = promisify(execFile);
 function parseArgs(argv) {
     const out = {};
@@ -154,7 +180,8 @@ async function main() {
         printHelp();
         process.exit(0);
     }
-    const channel = args.channel || process.env.SHAZAMSKI_CHANNEL;
+    const channel = args.channel || process.env.SHAZAMSKI_CHANNEL
+        || (process.env.SHAZAMSKI_ARTIST ? `https://soundcloud.com/${process.env.SHAZAMSKI_ARTIST}` : undefined);
     const clientId = args['client-id'] || process.env.SOUNDCLOUD_CLIENT_ID;
     const outPath = args.out || 'shazamski-index.json';
     const seconds = Math.min(120, Math.max(30, Number(args.seconds ?? 120)));
