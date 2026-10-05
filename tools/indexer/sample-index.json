@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "algorithm": "chromaprint",
+  "createdAt": "2026-10-05T00:00:00.000Z",
+  "channelUrl": "https://soundcloud.com/example-channel",
+  "trackCount": 2,
+  "tracks": [
+    {
+      "id": 1,
+      "title": "Example Track One \u2014 replace with real index",
+      "permalink_url": "https://soundcloud.com/example-channel/example-track-one",
+      "artwork_url": null,
+      "duration_ms": 185000,
+      "fp": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "fpLen": 24,
+      "fpDuration": 120
+    },
+    {
+      "id": 2,
+      "title": "Example Track Two \u2014 replace with real index",
+      "permalink_url": "https://soundcloud.com/example-channel/example-track-two",
+      "artwork_url": null,
+      "duration_ms": 210000,
+      "fp": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "fpLen": 24,
+      "fpDuration": 120
+    }
+  ]
+}

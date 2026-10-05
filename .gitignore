@@ -1,0 +1,12 @@
+node_modules/
+.output/
+.wxt/
+dist/
+*.log
+.DS_Store
+tools/indexer/node_modules/
+tools/indexer/*.mp3
+tools/indexer/*.wav
+tools/indexer/work/
+tools/indexer/*.json
+!tools/indexer/sample-index.json

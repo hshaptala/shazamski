@@ -1,0 +1,28 @@
+{
+  "name": "shazamski",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shazamski — Shazam-like extension identifying audio against one SoundCloud channel. WXT + React + Chromaprint (self-hosted, zero cost).",
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "zip": "wxt zip",
+    "typecheck": "tsc --noEmit",
+    "indexer": "node tools/indexer/build-index.mjs --help"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.280",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@wxt-dev/module-react": "^1.2.2",
+    "rusty-chromaprint-wasm": "^0.1.5",
+    "typescript": "^5.5.4",
+    "vite": "^8.3.2",
+    "wxt": "^0.21.4"
+  }
+}
