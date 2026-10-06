@@ -4,76 +4,35 @@ function ns(): any {
   return (globalThis as any).chrome;
 }
 
-const WORKLET_PROCESSOR = `
-class ShazamskiTap extends AudioWorkletProcessor {
-  constructor() {
-    super();
-    this._chunks = [];
-    this._total = 0;
-    this.port.onmessage = (e) => {
-      if (e.data && e.data.type === 'DUMP') {
-        const out = new Float32Array(this._total);
-        let o = 0;
-        for (const c of this._chunks) { out.set(c, o); o += c.length; }
-        this.port.postMessage({ type: 'CHUNK_DUMP', total: this._total, buf: out.buffer }, [out.buffer]);
-        this._chunks = [];
-        this._total = 0;
-      }
-    };
-  }
-  process(inputs) {
-    const inp = inputs && inputs[0];
-    if (inp && inp.length) {
-      const n = inp[0].length;
-      const mono = new Float32Array(n);
-      for (let i = 0; i < n; i++) {
-        let s = 0;
-        for (let c = 0; c < inp.length; c++) s += inp[c][i] || 0;
-        mono[i] = s / inp.length;
-      }
-      const copy = new Float32Array(mono);
-      this._chunks.push(copy);
-      this._total += copy.length;
-    }
-    return true;
-  }
-}
-registerProcessor('shazamski-tap', ShazamskiTap);
-`;
+const WORKLET_URL = 'worklets/tap-processor.js';
 
 async function captureRawPcm(tabStream: MediaStream, seconds: number, ctx: AudioContext): Promise<Float32Array> {
   const srcRate = ctx.sampleRate;
   const framesNeeded = Math.ceil(srcRate * seconds);
-  const blob = new Blob([WORKLET_PROCESSOR], { type: 'application/javascript' });
-  const workletUrl = URL.createObjectURL(blob);
+  await ctx.audioWorklet.addModule(ns().runtime.getURL(WORKLET_URL));
+  const source = ctx.createMediaStreamSource(tabStream);
+  source.connect(ctx.destination);
+  const workletNode = new AudioWorkletNode(ctx, 'shazamski-tap', { numberOfInputs: 1, numberOfOutputs: 0 });
+  source.connect(workletNode);
   try {
-    await ctx.audioWorklet.addModule(workletUrl);
-    const source = ctx.createMediaStreamSource(tabStream);
-    source.connect(ctx.destination);
-    const workletNode = new AudioWorkletNode(ctx, 'shazamski-tap', { numberOfInputs: 1, numberOfOutputs: 0 });
-    source.connect(workletNode);
-    try {
-      await new Promise((r) => setTimeout(r, seconds * 1000));
-      const monoAtSrcRate: Float32Array = await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('Worklet dump timed out')), 5000);
-        const onMsg = (e: MessageEvent) => {
-          if (e.data?.type === 'CHUNK_DUMP') {
-            clearTimeout(timer);
-            workletNode.port.removeEventListener('message', onMsg as any);
-            resolve(new Float32Array(e.data.buf));
-          }
-        };
-        workletNode.port.addEventListener('message', onMsg as any);
-        workletNode.port.start();
-        workletNode.port.postMessage({ type: 'DUMP' });
-      });
-      return toMono11025HighQuality([monoAtSrcRate.slice(0, Math.min(monoAtSrcRate.length, framesNeeded + srcRate))], srcRate);
-    } finally {
-      source.disconnect();
-      workletNode.disconnect();
-    }
+    await new Promise((r) => setTimeout(r, seconds * 1000));
+    const monoAtSrcRate: Float32Array = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Worklet dump timed out')), 5000);
+      const onMsg = (e: MessageEvent) => {
+        if (e.data?.type === 'CHUNK_DUMP') {
+          clearTimeout(timer);
+          workletNode.port.removeEventListener('message', onMsg as any);
+          resolve(new Float32Array(e.data.buf));
+        }
+      };
+      workletNode.port.addEventListener('message', onMsg as any);
+      workletNode.port.start();
+      workletNode.port.postMessage({ type: 'DUMP' });
+    });
+    return toMono11025HighQuality([monoAtSrcRate.slice(0, Math.min(monoAtSrcRate.length, framesNeeded + srcRate))], srcRate);
   } finally {
-    URL.revokeObjectURL(workletUrl);
+    source.disconnect();
+    workletNode.disconnect();
   }
 }
 
