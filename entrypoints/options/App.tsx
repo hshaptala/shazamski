@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { IndexFile, IndexMeta } from '../../utils/types';
 import { getChannelConfig, setChannelConfig, setIndexMeta, clearIndexMeta } from '../../utils/config';
 import { clearTracks, countTracks, getMeta, putMeta, putTracks } from '../../utils/index-db';
+import { invalidateWorkerIndex } from '../../utils/matcher-client';
 function fmtBytes(n: number): string {
     if (n < 1024)
         return `${n} B`;
@@ -85,9 +86,13 @@ export default function App() {
                 createdAt: String(json.createdAt ?? new Date().toISOString()),
                 loadedAt: new Date().toISOString(),
                 bytesApprox: text.length,
+                fpcalcVersion: typeof json.fpcalcVersion === 'string' ? json.fpcalcVersion : undefined,
+                algorithmHash: typeof json.algorithmHash === 'string' ? json.algorithmHash : undefined,
+                coverage: typeof json.coverage === 'string' ? json.coverage : 'head',
             };
             await putMeta(metaOut);
             await setIndexMeta(metaOut);
+            invalidateWorkerIndex();
             setMeta(metaOut);
             setCount(json.tracks.length);
             setProgress(`Done — ${json.tracks.length.toLocaleString()} tracks ready.`);
@@ -105,6 +110,7 @@ export default function App() {
             return;
         await clearTracks();
         await clearIndexMeta();
+        invalidateWorkerIndex();
         setMeta(null);
         setCount(0);
         setProgress('Index cleared.');
@@ -189,6 +195,8 @@ export default function App() {
           {meta && (<div className="muted small" style={{ marginTop: 4 }}>
               {fmtBytes(meta.bytesApprox)} · loaded {new Date(meta.loadedAt).toLocaleString()}
               {meta.channelUrl ? ` · ${meta.channelUrl}` : ''}
+              {meta.coverage ? ` · ${meta.coverage}` : ''}
+              {meta.fpcalcVersion ? ` · fpcalc ${meta.fpcalcVersion}` : ''}
             </div>)}
           <div className="row" style={{ marginTop: 8 }}>
             <button className="btn ghost" onClick={clearIndex} disabled={busy || !count}>

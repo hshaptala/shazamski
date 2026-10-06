@@ -144,21 +144,26 @@ Error states are explicit: no index (→ Options link), permission denied, silen
 ```
 SoundCloud channel
       │  tools/indexer (Node, once, on your PC)
-      │  resolve → paginate → ffmpeg head (120 s) → fpcalc -raw → base64 LE
+      │  resolve → paginate → ffmpeg window(s) → fpcalc -raw → base64 LE
+      │  --cover head|multi|full (multi adds 60s-offset segs for long tracks)
       ▼
-shazamski-index.json (12–30 MB)
-      │  Options page → IndexedDB `tracks` (+ meta in storage.local)
+shazamski-index.json (12–30 MB head-only, up to ~4x for full)
+      │  Options page → IndexedDB `tracks` batched 500/txn (+ meta in storage.local)
       ▼
-Popup [Listen] ──▶ background ──streamId──▶ offscreen (record 10 s, audible)
-      ▼ mono 11025 PCM
-fingerprint.ts: rusty-chromaprint-wasm (bit-exact) → Int32Array, else JS fallback
-      ▼ query sub-fps (~20–60)
-matcher.worker.ts: coarse slide (step 4) + refine, BER = Hamming/32, top-3, < 2 s / 8200 tracks
-      ▼
-Result card (title, artwork, duration, confidence, SoundCloud link)
+Popup [Listen] ──▶ background ──streamId──▶ offscreen (raw PCM worklet, audible)
+      ▼ mono 11025 PCM (OfflineAudioContext polyphase resample)
+fingerprint.ts: DC-remove + peak-normalize + RMS silence-trim → rusty-chromaprint-wasm
+      ▼ query sub-fps (~20–60), strict-WASM mode available
+matcher.worker.ts (persistent, INDEX once, transferable queries): two-stage search
+  stage 1 prefilter downsampled /4 step 8 → top 200, stage 2 full-res verify,
+  multi-window segs + shingle votes, BER = Hamming/32, ~200-300ms / 8251 tracks
+      ▼ gap + coverage confidence (STRONG/LIKELY/WEAK/NO_MATCH)
+Result card (title, artwork, duration, confidence incl. @offset for segs, link)
 ```
 
-**Matching math:** for each track, slide the query across the stored head at step 4, score each offset by mean bit-error-rate, refine ±4 around the best, keep lowest BER. `score = 1 − BER`; thresholds: `< 0.15` strong, `< 0.30` likely, `< 0.42` weak-but-shown, above → *No match*. Early exit on near-perfect hits + cooperative yields keep the worker responsive; `fpCache` avoids re-decoding base64 on repeat queries.
+**Matching math:** stage 1 scores downsampled frames with early-abandon BER cutoff, stage 2 verifies the top-200 shortlist at full resolution (step 4 + ±4 refine). Multi-window `segs` are searched as extra targets; overlapping query shingles vote for robustness. `score = 1 − BER`; verdicts: `≤0.15` STRONG, `≤0.30` LIKELY (needs gap), `≤0.42` WEAK only if discriminative, else *No match*. Thresholds calibrated with `tools/eval/eval-match.mjs` (clean p50≈0.10, opus-like≈0.17, noisy≈0.21). Persistent worker + decode-once cache removes the 30 MB copy-per-query; queries transfer as `ArrayBuffer`.
+
+**Capture:** 6 s fast pass first, auto-extended 12 s second opinion only when ambiguous (`WEAK` / small gap). Offscreen prefers raw PCM via `AudioWorklet` (no Opus), falls back to `MediaRecorder` for compatibility.
 
 **Why raw fingerprints:** the AcoustID-compressed string cannot be Hamming-compared without full decode, and offset-tolerant search needs per-frame bits. Raw int32 arrays (≈800 B/track head) are the compact sweet spot.
 
@@ -166,8 +171,9 @@ Result card (title, artwork, duration, confidence, SoundCloud link)
 
 ## 7. Production notes & limits
 
-- **WASM wiring:** `npm i rusty-chromaprint-wasm` is already a dependency; `fingerprint.ts` probes all known export shapes (`fingerprint_audio`, `fingerprint`, `Fingerprinter` class…) and falls back to the bundled JS chroma fingerprinter if the pack layout drifts. For bit-exact matching, **index and query must use the same algorithm** — production = WASM/fpcalc on both sides. The JS fallback is shape-compatible (still Hamming-searchable) for smoke tests only.
-- **First-2-minutes scope:** the index covers track heads; clips from deep in a 10-minute mix may miss. The popup says so in its no-match tips.
+- **WASM wiring:** `rusty-chromaprint-wasm` entry point is pinned and logged (`getWasmFingerprintFn()`); `strictWasm` mode refuses the JS fallback instead of silently mis-matching. For bit-exact matching, **index and query must use the same algorithm** — production = WASM/fpcalc on both sides. The JS fallback is shape-compatible for smoke tests only, and the popup warns when it was used.
+- **Index coverage:** default `--cover head` covers the first ~2 min; `--cover multi` adds a 60 s-offset window for tracks >3 min; `--cover full` windows every 60 s (max 4/track). Rebuild with `multi`/`full` to fix deep-mix misses. `fpcalcVersion` + `algorithmHash` are stored to detect pipeline drift.
+- **Eval:** `node tools/eval/eval-match.mjs --index shazamski-index.json --trials 300` reports recall @0.15/0.30/0.38/0.42 under clean/opus-like/noisy bit-flip models. Re-run after changing thresholds or resampling.
 - **Out of scope:** paid APIs, continuous monitoring, SoundCloud uploads/edits, Firefox/Safari.
 - **Privacy:** everything runs locally; the extension makes zero network calls during identification (only SoundCloud link-outs you click).
 

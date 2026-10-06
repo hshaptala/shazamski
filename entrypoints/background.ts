@@ -144,7 +144,7 @@ async function handleTabListen(seconds: number): Promise<any> {
 async function routeMessage(msg: any): Promise<any> {
     if (!msg || msg.type !== 'SHAZAMSKI_LISTEN')
         return undefined;
-    const seconds = Math.min(15, Math.max(5, Number(msg.seconds ?? 10) || 10));
+    const seconds = Math.min(15, Math.max(3, Number(msg.seconds ?? 6) || 6));
     return handleTabListen(seconds);
 }
 import { defineBackground } from 'wxt/utils/define-background';

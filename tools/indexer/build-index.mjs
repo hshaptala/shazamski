@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { resolveChannel, listAllTracks, pickTranscoding, resolveStreamUrl } from './soundcloud.mjs';
-import { fpcalcFile, encodeRawToB64 } from './fingerprint-utils.mjs';
+import { fpcalcFile, fpcalcVersion, encodeRawToB64 } from './fingerprint-utils.mjs';
 // Zero-dep .env loader: checks CWD/.env, tools/indexer/.env, and project-root/.env
 // so `--client-id` / `--channel` can be omitted after first setup.
 for (const p of [
@@ -64,8 +64,13 @@ Required:
   --out FILE           Output JSON path (default: shazamski-index.json)
 
 Options:
-  --seconds N          Seconds fingerprinted per track head (default 120, min 60, max 120).
+  --seconds N          Seconds fingerprinted per window head (default 120, min 60, max 120).
                        90–120 recommended: covers intros while keeping the index small.
+  --cover MODE         head (default) = first --seconds only; multi = head + mid window
+                       (60s offset) for tracks >3min; full = windows every 60s up to 4
+                       windows/track. Multi/full fix deep-mix misses at ~2-4x size.
+  --windows SPEC       Explicit windows "off:len,off:len" in seconds, e.g. "0:120,60:120".
+                       Overrides --cover/--seconds when given.
   --concurrency N      Parallel ffmpeg+fpcalc jobs (default 3). Use 2–4 to avoid rate limits.
   --limit N            Index only first N tracks (smoke test, e.g. --limit 20).
   --resume/--no-resume Skip ids already in --out (default on when file exists).
@@ -99,11 +104,15 @@ async function checkBin(bin, probeArgs, label) {
     }
 }
 async function downloadHeadToWav({ streamUrl, seconds, tmpWav, ffmpegBin }) {
+    return downloadWindowToWav({ streamUrl, offsetSec: 0, seconds, tmpWav, ffmpegBin });
+}
+async function downloadWindowToWav({ streamUrl, offsetSec = 0, seconds, tmpWav, ffmpegBin }) {
     const args = [
         '-hide_banner',
         '-loglevel',
         'error',
         '-y',
+        ...(offsetSec > 0 ? ['-ss', String(offsetSec)] : []),
         '-i',
         streamUrl,
         '-t',
@@ -118,39 +127,87 @@ async function downloadHeadToWav({ streamUrl, seconds, tmpWav, ffmpegBin }) {
     ];
     await execFileAsync(ffmpegBin, args, { maxBuffer: 64 * 1024 * 1024, timeout: 120000 });
 }
+/** Resolve fingerprint windows for a track: [{offsetSec, seconds}]. */
+function windowsForTrack(durationMs, seconds, mode, explicit) {
+    if (explicit?.length) return explicit;
+    if (mode === 'head') return [{ offsetSec: 0, seconds }];
+    const durSec = Math.max(0, Math.round((durationMs || 0) / 1000));
+    if (mode === 'multi') {
+        // Head + one mid window for tracks long enough to matter.
+        if (durSec >= 200) return [{ offsetSec: 0, seconds }, { offsetSec: 60, seconds: Math.min(seconds, Math.max(30, durSec - 60)) }];
+        return [{ offsetSec: 0, seconds }];
+    }
+    if (mode === 'full') {
+        const out = [{ offsetSec: 0, seconds }];
+        // Windows every 60s, capped at 4 to bound index size (~4x head-only).
+        for (let off = 60; off + 30 < durSec && out.length < 4; off += 60) {
+            out.push({ offsetSec: off, seconds: Math.min(seconds, durSec - off) });
+        }
+        return out;
+    }
+    return [{ offsetSec: 0, seconds }];
+}
+function parseWindowsSpec(spec, fallbackSeconds) {
+    if (!spec) return null;
+    const out = [];
+    for (const part of String(spec).split(',')) {
+        const m = part.trim().match(/^(\d+(?:\.\d+)?)\s*[:\-]\s*(\d+(?:\.\d+)?)$/) || part.trim().match(/^(\d+(?:\.\d+)?)$/);
+        if (!m) throw new Error(`Bad --windows entry "${part}" (expected "off:len")`);
+        if (m[2] !== undefined) out.push({ offsetSec: Number(m[1]), seconds: Math.min(120, Math.max(15, Number(m[2]))) });
+        else out.push({ offsetSec: 0, seconds: Math.min(120, Math.max(15, Number(m[1]) || fallbackSeconds)) });
+    }
+    return out.length ? out : null;
+}
 async function fingerprintTrack(track, ctx) {
-    const { seconds, ffmpegBin, fpcalcBin, workDir } = ctx;
+    const { seconds, ffmpegBin, fpcalcBin, workDir, cover, explicitWindows } = ctx;
     const tr = pickTranscoding(track);
     if (!tr)
         throw new Error('no streamable transcoding');
     const streamUrl = await resolveStreamUrl(tr.url, ctx.clientId);
-    const tmpWav = path.join(workDir, `s_${track.id}.wav`);
-    try {
-        await downloadHeadToWav({ streamUrl, seconds, tmpWav, ffmpegBin });
-        const st = fs.statSync(tmpWav);
-        if (!st.size || st.size < 44 + 11025 * 2 * 2)
-            throw new Error('downloaded clip too small (geo-blocked?)');
-        const { raw, duration } = await fpcalcFile(tmpWav, { fpcalcBin, lengthSec: seconds });
-        if (!raw || raw.length < 10)
-            throw new Error(`fpcalc returned only ${raw?.length ?? 0} sub-fingerprints`);
-        return {
-            id: track.id,
-            title: track.title,
-            permalink_url: track.permalink_url,
-            artwork_url: track.artwork_url,
-            duration_ms: track.duration_ms,
-            fp: encodeRawToB64(raw),
-            fpLen: raw.length,
-            fpDuration: Math.round(duration || seconds),
-        };
-    }
-    finally {
+    const windows = windowsForTrack(track.duration_ms, seconds, cover, explicitWindows);
+    const segs = [];
+    let primary = null;
+    for (let w = 0; w < windows.length; w++) {
+        const { offsetSec, seconds: len } = windows[w];
+        const tmpWav = path.join(workDir, `s_${track.id}_${w}.wav`);
         try {
-            fs.unlinkSync(tmpWav);
+            await downloadWindowToWav({ streamUrl, offsetSec, seconds: len, tmpWav, ffmpegBin });
+            const st = fs.statSync(tmpWav);
+            if (!st.size || st.size < 44 + 11025 * 2 * 2)
+                throw new Error('downloaded clip too small (geo-blocked?)');
+            const { raw, duration } = await fpcalcFile(tmpWav, { fpcalcBin, lengthSec: len });
+            if (!raw || raw.length < 10)
+                throw new Error(`fpcalc returned only ${raw?.length ?? 0} sub-fingerprints`);
+            const entry = {
+                fp: encodeRawToB64(raw),
+                fpLen: raw.length,
+                fpDuration: Math.round(duration || len),
+                offsetSec,
+            };
+            if (w === 0) primary = entry;
+            else segs.push(entry);
         }
-        catch {
+        finally {
+            try {
+                fs.unlinkSync(tmpWav);
+            }
+            catch {
+            }
         }
     }
+    if (!primary) throw new Error('no windows fingerprinted');
+    const out = {
+        id: track.id,
+        title: track.title,
+        permalink_url: track.permalink_url,
+        artwork_url: track.artwork_url,
+        duration_ms: track.duration_ms,
+        fp: primary.fp,
+        fpLen: primary.fpLen,
+        fpDuration: primary.fpDuration,
+    };
+    if (segs.length) out.segs = segs;
+    return out;
 }
 async function runPool(items, concurrency, fn, onItem) {
     const results = new Array(items.length);
@@ -194,6 +251,18 @@ async function main() {
     const dryRun = !!args['dry-run'] || ['1', 'true', 'yes'].includes((process.env.SHAZAMSKI_DRY_RUN ?? '').toLowerCase());
     const fpcalcBin = args.fpcalc || process.env.SHAZAMSKI_FPCALC || 'fpcalc';
     const ffmpegBin = args.ffmpeg || process.env.SHAZAMSKI_FFMPEG || 'ffmpeg';
+    const cover = String(args.cover || process.env.SHAZAMSKI_COVER || 'head').toLowerCase();
+    if (!['head', 'multi', 'full'].includes(cover)) {
+        console.error('Bad --cover (expected head|multi|full).');
+        process.exit(2);
+    }
+    let explicitWindows = null;
+    try {
+        explicitWindows = parseWindowsSpec(args.windows || process.env.SHAZAMSKI_WINDOWS, seconds);
+    } catch (e) {
+        console.error(`Bad --windows: ${e?.message ?? e}`);
+        process.exit(2);
+    }
     const noResume = args['no-resume'] === true || args.resume === 'false' || ['1', 'true', 'yes'].includes((process.env.SHAZAMSKI_NO_RESUME ?? '').toLowerCase());
     if (!channel) {
         console.error('Missing --channel. See --help.');
@@ -241,8 +310,10 @@ async function main() {
     const haveIds = new Set(existing.map((t) => t.id));
     const todo = tracks.filter((t) => !haveIds.has(t.id));
     console.log(`[shazamski] To fingerprint: ${todo.length} (skipping ${existing.length} already done).`);
+    const fpcalcVer = await fpcalcVersion(fpcalcBin);
+    console.log(`[shazamski] fpcalc: ${fpcalcVer} · cover=${explicitWindows ? explicitWindows.map((w) => `${w.offsetSec}:${w.seconds}`).join(',') : cover} · seconds=${seconds}`);
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shazamski-'));
-    const ctx = { seconds, ffmpegBin, fpcalcBin, workDir, clientId };
+    const ctx = { seconds, ffmpegBin, fpcalcBin, workDir, clientId, cover, explicitWindows };
     const t0 = Date.now();
     const collected = [...existing];
     const { results, failures } = await runPool(todo, concurrency, (t) => fingerprintTrack(t, ctx), (done, total) => {
@@ -261,6 +332,7 @@ async function main() {
         }
     }
     collected.sort((a, b) => a.id - b.id);
+    const coverage = explicitWindows ? (explicitWindows.length > 1 ? 'multi-window' : 'head') : (cover === 'head' ? 'head' : cover === 'multi' ? 'multi-window' : 'full');
     const index = {
         version: 1,
         algorithm: 'chromaprint',
@@ -268,6 +340,10 @@ async function main() {
         channelUrl: channel,
         trackCount: collected.length,
         tracks: collected,
+        fpcalcVersion: fpcalcVer,
+        targetSampleRate: 11025,
+        algorithmHash: 'chromaprint-fpcalc-raw-le-v1',
+        coverage,
     };
     fs.writeFileSync(outPath, JSON.stringify(index));
     const mb = (fs.statSync(outPath).size / 1024 / 1024).toFixed(1);
