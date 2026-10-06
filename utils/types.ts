@@ -1,11 +1,7 @@
 export interface TrackSegment {
-  /** Offset of this window from track start, in seconds. */
   offsetSec: number;
-  /** Base64 LE int32 fingerprint for this window. */
   fp: string;
-  /** Number of sub-fingerprints in this window. */
   fpLen: number;
-  /** Window length in seconds (as fingerprinted). */
   fpDuration?: number;
 }
 
@@ -15,15 +11,11 @@ export interface TrackEntry {
   permalink_url: string;
   artwork_url: string | null;
   duration_ms: number;
-  /** Primary (head) fingerprint, base64 LE int32. Always present for compat. */
   fp: string;
   fpLen: number;
   fpDuration?: number;
-  /**
-   * Optional extra windows (e.g. 60-180s) for long tracks / mixes.
-   * Matchers search `fp` first, then each segment.
-   */
   segs?: TrackSegment[];
+  source?: string;
 }
 
 export interface IndexFile {
@@ -31,20 +23,18 @@ export interface IndexFile {
   algorithm: 'chromaprint';
   createdAt: string;
   channelUrl: string;
+  channelUrls?: string[];
   trackCount: number;
   tracks: TrackEntry[];
-  /** fpcalc version string used at index time (drift detection). */
   fpcalcVersion?: string;
-  /** Query-side sample rate the index expects. */
   targetSampleRate?: number;
-  /** Content hash of the fingerprinting pipeline (WASM version + params). */
   algorithmHash?: string;
-  /** How the index was windowed: head-only or multi-window. */
   coverage?: 'head' | 'multi-window' | 'full';
 }
 
 export interface IndexMeta {
   channelUrl: string;
+  channelUrls?: string[];
   trackCount: number;
   createdAt: string;
   loadedAt: string;
@@ -67,20 +57,18 @@ export interface MatchCandidate {
     permalink_url: string;
     artwork_url: string | null;
     duration_ms: number;
+    source?: string | null;
   };
   score: number;
   ber: number;
   offset: number;
-  /** Which window matched (0 = head fp, >0 = segs[i-1]). */
   segIndex?: number;
   segOffsetSec?: number;
 }
 
 export interface MatchConfidence {
   ber: number;
-  /** (secondBest.ber - best.ber): larger = more discriminative. */
   gap: number;
-  /** Fraction of query frames actually compared (0..1). */
   coverage: number;
   verdict: 'STRONG' | 'LIKELY' | 'WEAK' | 'NO_MATCH';
 }

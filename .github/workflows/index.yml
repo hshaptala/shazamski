@@ -7,17 +7,9 @@ on:
         required: false
         default: "https://soundcloud.com/michel-waber"
       seconds:
-        description: "Seconds fingerprinted per track head (30-120)"
+        description: "Seconds fingerprinted per track head (30-180)"
         required: false
-        default: "120"
-      concurrency:
-        description: "Parallel ffmpeg+fpcalc jobs (2-4 to avoid rate limits)"
-        required: false
-        default: "3"
-      limit:
-        description: "Index only first N tracks (empty = full run)"
-        required: false
-        default: ""
+        default: "180"
       dry-run:
         description: "List tracks only, no audio work"
         required: false
@@ -36,8 +28,7 @@ jobs:
       SOUNDCLOUD_CLIENT_ID: ${{ secrets.SOUNDCLOUD_CLIENT_ID }}
       SHAZAMSKI_CHANNEL: https://soundcloud.com/michel-waber
       SHAZAMSKI_OUT: shazamski-index.json
-      SHAZAMSKI_SECONDS: "120"
-      SHAZAMSKI_CONCURRENCY: "3"
+      SHAZAMSKI_SECONDS: "180"
     steps:
       - name: Check out repo (for resume + commit-back)
         uses: actions/checkout@v4
@@ -65,12 +56,7 @@ jobs:
           [ -z "$CHANNEL" ] && CHANNEL="$SHAZAMSKI_CHANNEL"
           SECONDS="${{ inputs.seconds }}"
           [ -z "$SECONDS" ] && SECONDS="$SHAZAMSKI_SECONDS"
-          CONCURRENCY="${{ inputs.concurrency }}"
-          [ -z "$CONCURRENCY" ] && CONCURRENCY="$SHAZAMSKI_CONCURRENCY"
-          ARGS=(--channel "$CHANNEL" --out "$SHAZAMSKI_OUT" --seconds "$SECONDS" --concurrency "$CONCURRENCY")
-          if [ -n "${{ inputs.limit }}" ]; then
-            ARGS+=(--limit "${{ inputs.limit }}")
-          fi
+          ARGS=(--channel "$CHANNEL" --out "$SHAZAMSKI_OUT" --seconds "$SECONDS" --concurrency 8)
           if [ "${{ inputs.dry-run }}" = "true" ]; then
             ARGS+=(--dry-run)
           fi

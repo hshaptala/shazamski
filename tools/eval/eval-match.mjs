@@ -1,16 +1,4 @@
 #!/usr/bin/env node
-/**
- * Shazamski eval harness — measures matcher accuracy without any audio.
- *
- * Takes a built shazamski-index.json, synthesizes queries by slicing stored
- * fingerprints at random offsets and flipping bits at controlled rates
- * (clean / opus-like / noisy), then runs the same two-stage logic as
- * utils/matcher.ts (ported to zero-dep JS) and reports recall + BER ROC.
- *
- * Usage:
- *   node tools/eval/eval-match.mjs --index shazamski-index.json --trials 300
- *   node tools/eval/eval-match.mjs --index shazamski-index.json --trials 300 --query-frames 40 --seed 42
- */
 import fs from 'node:fs';
 
 function parseArgs(argv) {
@@ -27,7 +15,6 @@ function parseArgs(argv) {
   return out;
 }
 
-// Deterministic PRNG (mulberry32) so runs are comparable.
 function rng(seed) {
   let s = seed >>> 0;
   return () => {
@@ -71,12 +58,10 @@ function bestOffset(query, target, coarseStep = 4) {
   return best;
 }
 
-/** Flip each bit independently with probability p (simulates codec/channel noise). */
 function noisyCopy(raw, p, rand) {
   const out = Int32Array.from(raw);
   for (let i = 0; i < out.length; i++) {
     let w = out[i] | 0;
-    // Fast path: skip words with no flips (most words when p is small).
     let mask = 0;
     for (let b = 0; b < 32; b++) if (rand() < p) mask |= (1 << b) >>> 0;
     out[i] = (w ^ mask) | 0;
@@ -125,7 +110,6 @@ async function main() {
       const off = Math.floor(rand() * (maxOff + 1));
       const slice = target.slice(off, off + queryFrames);
       const query = noisyCopy(slice, sc.p, rand);
-      // Brute-force top-1 over a 500-track sample (fast) — full 8k in CI is ~trials*500*offsets hamming ops.
       const sampleIdx = new Set([ti]);
       while (sampleIdx.size < Math.min(500, decoded.length)) sampleIdx.add(Math.floor(rand() * decoded.length));
       let bestId = -1; let bestBer = 1; let secondBer = 1;

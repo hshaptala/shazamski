@@ -33,8 +33,6 @@ export async function* listAllTracks(userId, clientId, { pageSize = 200 } = {}) 
         }
         next = j.next_href ? j.next_href.replace(/^http:/, 'https:') : null;
         if (next) {
-            // SoundCloud sometimes returns next_href without client_id → 401 on page 2+.
-            // Strip any stale key and attach the current one.
             next = next.replace(/[?&]client_id=[^&]*/g, (m) => (m[0] === '?' ? '?' : ''));
             next = next.replace(/[?&]$/, '');
             next += (next.includes('?') ? '&' : '?') + `client_id=${clientId}`;

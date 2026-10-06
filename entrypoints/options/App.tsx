@@ -56,12 +56,14 @@ export default function App() {
     }, []);
     async function saveChannel() {
         setError(null);
-        const v = channelUrl.trim();
-        if (v && !/^https:\/\/(www\.)?soundcloud\.com\//.test(v)) {
-            setError('That does not look like a SoundCloud channel URL (expected https://soundcloud.com/…).');
+        const parts = channelUrl.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+        const bad = parts.find((v) => !/^https:\/\/(www\.)?soundcloud\.com\//.test(v));
+        if (bad) {
+            setError(`"${bad}" does not look like a SoundCloud channel URL (expected https://soundcloud.com/…). Separate multiple channels with commas.`);
             return;
         }
-        await setChannelConfig({ channelUrl: v });
+        await setChannelConfig({ channelUrl: parts.join(', ') });
+        setChannelUrl(parts.join(', '));
         setSavedTick(new Date().toLocaleTimeString());
         setTimeout(() => setSavedTick(null), 2500);
     }
@@ -80,8 +82,12 @@ export default function App() {
             await putTracks(json.tracks, (done, total) => {
                 setProgress(`Storing… ${done.toLocaleString()} / ${total.toLocaleString()}`);
             });
+            const channelUrls = Array.isArray(json.channelUrls)
+                ? json.channelUrls.filter((u: any) => typeof u === 'string')
+                : [];
             const metaOut: IndexMeta = {
-                channelUrl: String(json.channelUrl ?? channelUrl.trim() ?? ''),
+                channelUrl: String(json.channelUrl ?? channelUrls[0] ?? channelUrl.trim() ?? ''),
+                channelUrls: channelUrls.length ? channelUrls : undefined,
                 trackCount: json.tracks.length,
                 createdAt: String(json.createdAt ?? new Date().toISOString()),
                 loadedAt: new Date().toISOString(),
@@ -125,13 +131,14 @@ export default function App() {
       </div>
 
       <div className="card">
-        <h3 style={{ margin: '0 0 8px' }}>1 · SoundCloud channel</h3>
+        <h3 style={{ margin: '0 0 8px' }}>1 · SoundCloud channels</h3>
         <div className="muted" style={{ marginBottom: 8 }}>
-          The channel your offline index was built from. Stored for reference — matching always uses the loaded index
+          The channels your offline index was built from (comma-separated for
+          multi-channel indexes). Stored for reference — matching always uses the loaded index
           below, never the network.
         </div>
         <div className="row">
-          <input value={channelUrl} onChange={(e) => setChannelUrl(e.target.value)} placeholder="https://soundcloud.com/your-channel" style={{
+          <input value={channelUrl} onChange={(e) => setChannelUrl(e.target.value)} placeholder="https://soundcloud.com/channel-a, https://soundcloud.com/channel-b" style={{
             flex: 1,
             background: '#0f1319',
             border: '1px solid #334052',
@@ -194,10 +201,14 @@ export default function App() {
           </div>
           {meta && (<div className="muted small" style={{ marginTop: 4 }}>
               {fmtBytes(meta.bytesApprox)} · loaded {new Date(meta.loadedAt).toLocaleString()}
-              {meta.channelUrl ? ` · ${meta.channelUrl}` : ''}
               {meta.coverage ? ` · ${meta.coverage}` : ''}
               {meta.fpcalcVersion ? ` · fpcalc ${meta.fpcalcVersion}` : ''}
             </div>)}
+          {meta && (meta.channelUrls?.length ? meta.channelUrls : meta.channelUrl ? [meta.channelUrl] : []).length > 0 && (
+            <div className="muted small" style={{ marginTop: 4 }}>
+              Channels ({(meta.channelUrls?.length ?? 1)}): {(meta.channelUrls ?? [meta.channelUrl]).join(', ')}
+            </div>
+          )}
           <div className="row" style={{ marginTop: 8 }}>
             <button className="btn ghost" onClick={clearIndex} disabled={busy || !count}>
               Clear index

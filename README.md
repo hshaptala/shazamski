@@ -171,7 +171,7 @@ Result card (title, artwork, duration, confidence incl. @offset for segs, link)
 
 ## 7. Production notes & limits
 
-- **WASM wiring:** `rusty-chromaprint-wasm` entry point is pinned and logged (`getWasmFingerprintFn()`); `strictWasm` mode refuses the JS fallback instead of silently mis-matching. For bit-exact matching, **index and query must use the same algorithm** — production = WASM/fpcalc on both sides. The JS fallback is shape-compatible for smoke tests only, and the popup warns when it was used.
+- **WASM wiring:** `rusty-chromaprint-wasm` is required — if it is unavailable, identification fails loudly with `FINGERPRINT_FAILED` instead of silently mis-matching. For bit-exact matching, **index and query must use the same algorithm** — WASM/fpcalc on both sides.
 - **Index coverage:** default `--cover head` covers the first ~2 min; `--cover multi` adds a 60 s-offset window for tracks >3 min; `--cover full` windows every 60 s (max 4/track). Rebuild with `multi`/`full` to fix deep-mix misses. `fpcalcVersion` + `algorithmHash` are stored to detect pipeline drift.
 - **Eval:** `node tools/eval/eval-match.mjs --index shazamski-index.json --trials 300` reports recall @0.15/0.30/0.38/0.42 under clean/opus-like/noisy bit-flip models. Re-run after changing thresholds or resampling.
 - **Out of scope:** paid APIs, continuous monitoring, SoundCloud uploads/edits, Firefox/Safari.

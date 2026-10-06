@@ -6,8 +6,6 @@ import path from 'node:path';
 import os from 'node:os';
 import { resolveChannel, listAllTracks, pickTranscoding, resolveStreamUrl } from './soundcloud.mjs';
 import { fpcalcFile, fpcalcVersion, encodeRawToB64 } from './fingerprint-utils.mjs';
-// Zero-dep .env loader: checks CWD/.env, tools/indexer/.env, and project-root/.env
-// so `--client-id` / `--channel` can be omitted after first setup.
 for (const p of [
     path.join(process.cwd(), '.env'),
     path.join(path.dirname(new URL(import.meta.url).pathname), '.env'),
@@ -30,7 +28,7 @@ for (const p of [
             break;
         }
     }
-    catch { /* ignore malformed .env */ }
+    catch { }
 }
 const execFileAsync = promisify(execFile);
 function parseArgs(argv) {
@@ -43,10 +41,44 @@ function parseArgs(argv) {
             if (next == null || next.startsWith('--'))
                 out[key] = true;
             else {
-                out[key] = next;
+                if (key === 'channel') {
+                    if (out[key] === undefined) out[key] = next;
+                    else if (Array.isArray(out[key])) out[key].push(next);
+                    else out[key] = [out[key], next];
+                } else {
+                    out[key] = next;
+                }
                 i++;
             }
         }
+    }
+    return out;
+}
+function collectChannels(args) {
+    const raw = [];
+    const pushList = (v) => {
+        if (v == null) return;
+        const arr = Array.isArray(v) ? v : [v];
+        for (const item of arr) {
+            for (const part of String(item).split(/[\s,]+/)) {
+                const t = part.trim().replace(/\/+$/, '');
+                if (t) raw.push(t);
+            }
+        }
+    };
+    pushList(args.channel);
+    pushList(process.env.SHAZAMSKI_CHANNEL);
+    if (process.env.SHAZAMSKI_ARTIST) {
+        for (const slug of String(process.env.SHAZAMSKI_ARTIST).split(/[\s,]+/)) {
+            const t = slug.trim().replace(/^\/+|\/+$/g, '');
+            if (t) raw.push(`https://soundcloud.com/${t}`);
+        }
+    }
+    const seen = new Set();
+    const out = [];
+    for (const c of raw) {
+        const norm = c.toLowerCase();
+        if (!seen.has(norm)) { seen.add(norm); out.push(c); }
     }
     return out;
 }
@@ -55,24 +87,31 @@ function printHelp() {
 Shazamski indexer — SoundCloud channel → Chromaprint index JSON
 
 Usage:
-  node build-index.mjs --channel URL --client-id ID --out shazamski-index.json [options]
+  node build-index.mjs --channel URL [--channel URL …] --client-id ID --out shazamski-index.json [options]
+
+  Multi-channel: repeat --channel, or pass a comma-separated list. Each track
+  is tagged with its source channel; duplicates (same SoundCloud id) are kept
+  once. Use tools/indexer/merge-indexes.mjs to combine existing per-channel
+  JSON files without re-fingerprinting.
 
 Required:
   --channel URL        Public SoundCloud channel, e.g. https://soundcloud.com/your-channel
+                       Repeatable: --channel A --channel B. Or comma-separated:
+                       --channel https://soundcloud.com/a,https://soundcloud.com/b
   --client-id ID       Public API key (or env SOUNDCLOUD_CLIENT_ID). Get it free from
                        DevTools Network tab while playing any soundcloud.com track.
   --out FILE           Output JSON path (default: shazamski-index.json)
 
 Options:
-  --seconds N          Seconds fingerprinted per window head (default 120, min 60, max 120).
-                       90–120 recommended: covers intros while keeping the index small.
+  --seconds N          Seconds fingerprinted per window head (default 120, min 30, max 180).
+                       90–180 recommended: covers intros while keeping the index small.
   --cover MODE         head (default) = first --seconds only; multi = head + mid window
                        (60s offset) for tracks >3min; full = windows every 60s up to 4
                        windows/track. Multi/full fix deep-mix misses at ~2-4x size.
   --windows SPEC       Explicit windows "off:len,off:len" in seconds, e.g. "0:120,60:120".
                        Overrides --cover/--seconds when given.
-  --concurrency N      Parallel ffmpeg+fpcalc jobs (default 3). Use 2–4 to avoid rate limits.
-  --limit N            Index only first N tracks (smoke test, e.g. --limit 20).
+  --concurrency N      Parallel ffmpeg+fpcalc jobs (default 8).
+  --limit N            Index only first N tracks per channel (smoke test, e.g. --limit 20).
   --resume/--no-resume Skip ids already in --out (default on when file exists).
   --fpcalc BIN         fpcalc binary name/path (default: fpcalc).
   --ffmpeg BIN         ffmpeg binary name/path (default: ffmpeg).
@@ -80,7 +119,8 @@ Options:
   --help               This text.
 
   Every option also reads .env (CLI wins): SOUNDCLOUD_CLIENT_ID, SHAZAMSKI_CHANNEL
-  (or SHAZAMSKI_ARTIST slug), SHAZAMSKI_OUT, SHAZAMSKI_SECONDS, SHAZAMSKI_CONCURRENCY,
+  (or SHAZAMSKI_ARTIST slug — both accept comma-separated lists), SHAZAMSKI_OUT,
+  SHAZAMSKI_SECONDS, SHAZAMSKI_CONCURRENCY,
   SHAZAMSKI_LIMIT, SHAZAMSKI_FPCALC, SHAZAMSKI_FFMPEG, SHAZAMSKI_DRY_RUN=1, SHAZAMSKI_NO_RESUME=1.
 
 Examples:
@@ -88,6 +128,11 @@ Examples:
   sudo apt install ffmpeg libchromaprint-tools
   node build-index.mjs --channel https://soundcloud.com/my-channel --out shazamski-index.json --limit 20
   node build-index.mjs --channel https://soundcloud.com/my-channel --out shazamski-index.json
+  # two channels, one file:
+  node build-index.mjs --channel https://soundcloud.com/a --channel https://soundcloud.com/b --out multi.json
+  # or comma-separated (same thing):
+  node build-index.mjs --channel https://soundcloud.com/a,https://soundcloud.com/b --out multi.json
+  # .env alternative: SHAZAMSKI_CHANNEL="https://soundcloud.com/a, https://soundcloud.com/b"
 `);
 }
 async function checkBin(bin, probeArgs, label) {
@@ -127,19 +172,16 @@ async function downloadWindowToWav({ streamUrl, offsetSec = 0, seconds, tmpWav, 
     ];
     await execFileAsync(ffmpegBin, args, { maxBuffer: 64 * 1024 * 1024, timeout: 120000 });
 }
-/** Resolve fingerprint windows for a track: [{offsetSec, seconds}]. */
 function windowsForTrack(durationMs, seconds, mode, explicit) {
     if (explicit?.length) return explicit;
     if (mode === 'head') return [{ offsetSec: 0, seconds }];
     const durSec = Math.max(0, Math.round((durationMs || 0) / 1000));
     if (mode === 'multi') {
-        // Head + one mid window for tracks long enough to matter.
         if (durSec >= 200) return [{ offsetSec: 0, seconds }, { offsetSec: 60, seconds: Math.min(seconds, Math.max(30, durSec - 60)) }];
         return [{ offsetSec: 0, seconds }];
     }
     if (mode === 'full') {
         const out = [{ offsetSec: 0, seconds }];
-        // Windows every 60s, capped at 4 to bound index size (~4x head-only).
         for (let off = 60; off + 30 < durSec && out.length < 4; off += 60) {
             out.push({ offsetSec: off, seconds: Math.min(seconds, durSec - off) });
         }
@@ -153,8 +195,8 @@ function parseWindowsSpec(spec, fallbackSeconds) {
     for (const part of String(spec).split(',')) {
         const m = part.trim().match(/^(\d+(?:\.\d+)?)\s*[:\-]\s*(\d+(?:\.\d+)?)$/) || part.trim().match(/^(\d+(?:\.\d+)?)$/);
         if (!m) throw new Error(`Bad --windows entry "${part}" (expected "off:len")`);
-        if (m[2] !== undefined) out.push({ offsetSec: Number(m[1]), seconds: Math.min(120, Math.max(15, Number(m[2]))) });
-        else out.push({ offsetSec: 0, seconds: Math.min(120, Math.max(15, Number(m[1]) || fallbackSeconds)) });
+        if (m[2] !== undefined) out.push({ offsetSec: Number(m[1]), seconds: Math.min(180, Math.max(15, Number(m[2]))) });
+        else out.push({ offsetSec: 0, seconds: Math.min(180, Math.max(15, Number(m[1]) || fallbackSeconds)) });
     }
     return out.length ? out : null;
 }
@@ -205,6 +247,7 @@ async function fingerprintTrack(track, ctx) {
         fp: primary.fp,
         fpLen: primary.fpLen,
         fpDuration: primary.fpDuration,
+        source: track._source || undefined,
     };
     if (segs.length) out.segs = segs;
     return out;
@@ -243,10 +286,12 @@ async function main() {
     }
     const channel = args.channel || process.env.SHAZAMSKI_CHANNEL
         || (process.env.SHAZAMSKI_ARTIST ? `https://soundcloud.com/${process.env.SHAZAMSKI_ARTIST}` : undefined);
+    void channel;
+    const channels = collectChannels(args);
     const clientId = args['client-id'] || process.env.SOUNDCLOUD_CLIENT_ID;
     const outPath = args.out || process.env.SHAZAMSKI_OUT || 'shazamski-index.json';
-    const seconds = Math.min(120, Math.max(30, Number(args.seconds ?? process.env.SHAZAMSKI_SECONDS ?? 120)));
-    const concurrency = Math.min(16, Math.max(1, Number(args.concurrency ?? process.env.SHAZAMSKI_CONCURRENCY ?? 3)));
+    const seconds = Math.min(180, Math.max(30, Number(args.seconds ?? process.env.SHAZAMSKI_SECONDS ?? 120)));
+    const concurrency = Math.min(16, Math.max(1, Number(args.concurrency ?? process.env.SHAZAMSKI_CONCURRENCY ?? 8)));
     const limit = args.limit ? Number(args.limit) : (process.env.SHAZAMSKI_LIMIT ? Number(process.env.SHAZAMSKI_LIMIT) : Infinity);
     const dryRun = !!args['dry-run'] || ['1', 'true', 'yes'].includes((process.env.SHAZAMSKI_DRY_RUN ?? '').toLowerCase());
     const fpcalcBin = args.fpcalc || process.env.SHAZAMSKI_FPCALC || 'fpcalc';
@@ -264,7 +309,7 @@ async function main() {
         process.exit(2);
     }
     const noResume = args['no-resume'] === true || args.resume === 'false' || ['1', 'true', 'yes'].includes((process.env.SHAZAMSKI_NO_RESUME ?? '').toLowerCase());
-    if (!channel) {
+    if (!channels.length) {
         console.error('Missing --channel. See --help.');
         process.exit(2);
     }
@@ -272,22 +317,31 @@ async function main() {
         console.error('Missing --client-id (or env SOUNDCLOUD_CLIENT_ID). See soundcloud.mjs header for the free DevTools trick.');
         process.exit(2);
     }
-    console.log(`[shazamski] Resolving ${channel} …`);
-    const user = await resolveChannel(channel, clientId);
-    console.log(`[shazamski] Channel: ${user.username} (@${user.permalink}) id=${user.id} (~${user.trackCount} tracks)`);
-    console.log('[shazamski] Listing tracks (paginated, ~150 ms/page) …');
     const tracks = [];
-    for await (const t of listAllTracks(user.id, clientId)) {
-        tracks.push(t);
-        if (tracks.length % 500 === 0)
-            console.log(`  … ${tracks.length} listed`);
-        if (tracks.length >= limit)
-            break;
+    const seenTrackIds = new Set();
+    let dupes = 0;
+    for (const channel of channels) {
+        console.log(`[shazamski] Resolving ${channel} …`);
+        const user = await resolveChannel(channel, clientId);
+        console.log(`[shazamski] Channel: ${user.username} (@${user.permalink}) id=${user.id} (~${user.trackCount} tracks)`);
+        console.log('[shazamski] Listing tracks (paginated, ~150 ms/page) …');
+        let listed = 0;
+        for await (const t of listAllTracks(user.id, clientId)) {
+            if (seenTrackIds.has(t.id)) { dupes++; continue; }
+            seenTrackIds.add(t.id);
+            tracks.push({ ...t, _source: channel });
+            listed++;
+            if (tracks.length % 500 === 0)
+                console.log(`  … ${tracks.length} listed (total across ${channels.length} channel(s))`);
+            if (listed >= limit)
+                break;
+        }
+        console.log(`[shazamski] ${channel}: ${listed} tracks${Number.isFinite(limit) ? ` (limited to ${limit})` : ''}.`);
     }
-    console.log(`[shazamski] Found ${tracks.length} tracks${Number.isFinite(limit) ? ` (limited to ${limit})` : ''}.`);
+    console.log(`[shazamski] Found ${tracks.length} unique tracks across ${channels.length} channel(s)${dupes ? ` (${dupes} cross-channel duplicates skipped)` : ''}.`);
     if (dryRun) {
         for (const t of tracks.slice(0, 20))
-            console.log(`  - ${t.id} ${t.title}`);
+            console.log(`  - ${t.id} ${t.title} [${t._source}]`);
         if (tracks.length > 20)
             console.log(`  … and ${tracks.length - 20} more`);
         return;
@@ -333,11 +387,21 @@ async function main() {
     }
     collected.sort((a, b) => a.id - b.id);
     const coverage = explicitWindows ? (explicitWindows.length > 1 ? 'multi-window' : 'head') : (cover === 'head' ? 'head' : cover === 'multi' ? 'multi-window' : 'full');
+    const prevUrls = [];
+    try {
+        const prevRaw = fs.existsSync(outPath) && !noResume ? JSON.parse(fs.readFileSync(outPath, 'utf8')) : null;
+        if (Array.isArray(prevRaw?.channelUrls)) prevUrls.push(...prevRaw.channelUrls);
+        else if (typeof prevRaw?.channelUrl === 'string' && prevRaw.channelUrl) prevUrls.push(prevRaw.channelUrl);
+    } catch { }
+    const channelUrls = [...prevUrls, ...channels].filter(
+        (u, i, a) => a.findIndex((x) => x.toLowerCase() === u.toLowerCase()) === i,
+    );
     const index = {
         version: 1,
         algorithm: 'chromaprint',
         createdAt: new Date().toISOString(),
-        channelUrl: channel,
+        channelUrl: channelUrls[0] ?? channels[0],
+        channelUrls,
         trackCount: collected.length,
         tracks: collected,
         fpcalcVersion: fpcalcVer,

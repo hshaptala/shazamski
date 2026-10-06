@@ -14,22 +14,13 @@ function openDb(): Promise<IDBDatabase> {
         const s = db.createObjectStore(TRACKS_STORE, { keyPath: 'id' });
         s.createIndex('fpLen', 'fpLen', { unique: false });
       } else {
-        // v1 -> v2: add fpLen index if missing
         const tx = req.transaction;
         if (tx) {
           const store = tx.objectStore(TRACKS_STORE);
-          if (!(store as any).indexNames?.contains?.('fpLen')) {
-            try {
-              store.createIndex('fpLen', 'fpLen', { unique: false });
-            } catch {
-              // index may already exist in some browsers
-            }
-          }
+          if (!(store as any).indexNames?.contains?.('fpLen')) store.createIndex('fpLen', 'fpLen', { unique: false });
         }
       }
-      if (!db.objectStoreNames.contains(META_STORE)) {
-        db.createObjectStore(META_STORE, { keyPath: 'key' });
-      }
+      if (!db.objectStoreNames.contains(META_STORE)) db.createObjectStore(META_STORE, { keyPath: 'key' });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error('IndexedDB open failed'));
@@ -49,7 +40,7 @@ function tx<T>(mode: IDBTransactionMode, fn: (db: IDBDatabase) => Promise<T>): P
             try {
               db.close();
             } catch {
-              // ignore
+              throw new Error('IndexedDB close failed');
             }
             reject(e);
           },
@@ -65,10 +56,6 @@ function requestToPromise<T>(req: IDBRequest<T>): Promise<T> {
   });
 }
 
-/**
- * Batched puts: one transaction per 500-track chunk so an 8k-track import
- * neither blows the transaction timeout nor blocks progress reporting.
- */
 export async function putTracks(tracks: TrackEntry[], onProgress?: (done: number, total: number) => void): Promise<void> {
   const CHUNK = 500;
   for (let start = 0; start < tracks.length; start += CHUNK) {
@@ -85,12 +72,7 @@ export async function putTracks(tracks: TrackEntry[], onProgress?: (done: number
     } finally {
       db.close();
     }
-    try {
-      onProgress?.(Math.min(tracks.length, start + chunk.length), tracks.length);
-    } catch {
-      // ignore
-    }
-    // Yield so the Options page stays responsive on 30MB imports.
+    onProgress?.(Math.min(tracks.length, start + chunk.length), tracks.length);
     if (start + CHUNK < tracks.length) await new Promise((r) => setTimeout(r, 0));
   }
 }
@@ -116,8 +98,7 @@ export async function countTracks(): Promise<number> {
   const db = await openDb();
   try {
     const transaction = db.transaction(TRACKS_STORE, 'readonly');
-    const n = await requestToPromise<number>(transaction.objectStore(TRACKS_STORE).count());
-    return n;
+    return await requestToPromise<number>(transaction.objectStore(TRACKS_STORE).count());
   } finally {
     db.close();
   }
@@ -127,8 +108,7 @@ export async function getAllTracks(): Promise<TrackEntry[]> {
   const db = await openDb();
   try {
     const transaction = db.transaction(TRACKS_STORE, 'readonly');
-    const store = transaction.objectStore(TRACKS_STORE);
-    const out: TrackEntry[] = await requestToPromise<any>(store.getAll());
+    const out: TrackEntry[] = await requestToPromise<any>(transaction.objectStore(TRACKS_STORE).getAll());
     return out ?? [];
   } finally {
     db.close();
@@ -139,8 +119,7 @@ export async function iterateTracks(batchSize: number, cb: (batch: TrackEntry[])
   const db = await openDb();
   try {
     const transaction = db.transaction(TRACKS_STORE, 'readonly');
-    const store = transaction.objectStore(TRACKS_STORE);
-    const cursorReq = store.openCursor();
+    const cursorReq = transaction.objectStore(TRACKS_STORE).openCursor();
     let batch: TrackEntry[] = [];
     await new Promise<void>((resolve, reject) => {
       cursorReq.onsuccess = () => {
@@ -179,8 +158,7 @@ export async function iterateTracks(batchSize: number, cb: (batch: TrackEntry[])
 export async function putMeta(meta: IndexMeta): Promise<void> {
   return tx('readwrite', async (db) => {
     const transaction = db.transaction(META_STORE, 'readwrite');
-    const done = requestToPromise(transaction.objectStore(META_STORE).put({ key: 'meta', ...meta }));
-    await done;
+    await requestToPromise(transaction.objectStore(META_STORE).put({ key: 'meta', ...meta }));
     await new Promise<void>((resolve, reject) => {
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error ?? new Error('putMeta failed'));
